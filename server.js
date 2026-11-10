@@ -10,7 +10,7 @@ import { SOURCES } from './lib/sources.js';
 import { resolveTopics } from './lib/topics.js';
 import { rank, TYPES } from './lib/rank.js';
 import { suggest, locateEvents, countryCode } from './lib/geo.js';
-import { describeError } from './lib/net.js';
+import { describeError, mapLimit } from './lib/net.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, 'public');
@@ -64,7 +64,8 @@ async function search(prefs, send) {
   const ctx = { prefs, loc, topics, now };
   const all = [];
 
-  await Promise.all(SOURCES.map(async src => {
+  // Bound concurrent requests so one search does not overwhelm upstream sites.
+  await mapLimit(SOURCES, 14, async src => {
     const report = extra => send({ type: 'source', id: src.id, ...extra });
     if (!src.types.some(t => prefs.types.includes(t))) return report({ state: 'skipped', note: 'not one of your event types' });
     if (prefs.mode === 'online' && src.needsCity) return report({ state: 'skipped', note: 'lists in-person events' });
@@ -86,7 +87,7 @@ async function search(prefs, send) {
     } catch (err) {
       report({ state: 'failed', note: describeError(err) });
     }
-  }));
+  });
 
   if (loc) {
     send({ type: 'stage', text: 'Measuring distances' });
