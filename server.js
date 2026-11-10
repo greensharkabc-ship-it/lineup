@@ -24,18 +24,26 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=u
 // ---- preferences -----------------------------------------------------------
 
 const text = (v, n) => String(v ?? '').slice(0, n).trim();
+const SECURITY_HEADERS = {
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'strict-origin-when-cross-origin',
+  'x-frame-options': 'DENY',
+  'permissions-policy': 'camera=(), microphone=(), geolocation=()',
+};
 
 function cleanPrefs(b = {}) {
   const types = Array.isArray(b.types) ? b.types.filter(t => TYPES.includes(t)) : [];
   const l = b.loc;
-  const loc = l && Number.isFinite(Number(l.lat)) && Number.isFinite(Number(l.lon)) && /^[A-Za-z]{2}$/.test(l.countryCode || '')
-    ? { name: text(l.name, 80), admin1: text(l.admin1, 80), country: text(l.country, 80), countryCode: l.countryCode.toUpperCase(), lat: Number(l.lat), lon: Number(l.lon) }
+  const lat = Number(l?.lat);
+  const lon = Number(l?.lon);
+  const loc = l && Number.isFinite(lat) && lat >= -90 && lat <= 90 && Number.isFinite(lon) && lon >= -180 && lon <= 180 && /^[A-Za-z]{2}$/.test(l.countryCode || '')
+    ? { name: text(l.name, 80), admin1: text(l.admin1, 80), country: text(l.country, 80), countryCode: l.countryCode.toUpperCase(), lat, lon }
     : null;
   return {
     city: text(b.city, 120),
     loc,
     radius: ['city', 'region', 'country', 'anywhere'].includes(b.radius) ? b.radius : 'country',
-    interests: Array.isArray(b.interests) ? b.interests.filter(i => typeof i === 'string').slice(0, 20) : [],
+    interests: Array.isArray(b.interests) ? b.interests.filter(i => typeof i === 'string').map(i => text(i, 80)).filter(Boolean).slice(0, 20) : [],
     keywords: text(b.keywords, 200),
     types: types.length ? types : [...TYPES],
     mode: ['any', 'in-person', 'online'].includes(b.mode) ? b.mode : 'any',
@@ -118,7 +126,7 @@ async function readJson(req, limit = 100_000) {
 }
 
 function json(res, status, body) {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+  res.writeHead(status, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   res.end(JSON.stringify(body));
 }
 
@@ -128,8 +136,8 @@ async function serveStatic(pathname, res) {
   if (file !== PUBLIC && !file.startsWith(PUBLIC + path.sep)) return json(res, 403, { error: 'forbidden' });
   try {
     const data = await fs.readFile(file);
-    res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-cache' });
-    res.end(data);
+    res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-cache' });
+    res.end(res.req?.method === 'HEAD' ? undefined : data);
   } catch {
     json(res, 404, { error: 'not found' });
   }
@@ -139,12 +147,13 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   try {
     if (req.method === 'GET' && url.pathname === '/api/geocode') {
-      const places = await suggest(url.searchParams.get('q') || '').catch(() => []);
+      const query = text(url.searchParams.get('q'), 200);
+      const places = query ? await suggest(query).catch(() => []) : [];
       return json(res, 200, { places });
     }
     if (req.method === 'POST' && url.pathname === '/api/search') {
       const prefs = cleanPrefs(await readJson(req));
-      res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
+      res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
       const send = obj => { if (!res.writableEnded) res.write(JSON.stringify(obj) + '\n'); };
       try { await search(prefs, send); }
       catch (err) { send({ type: 'error', message: describeError(err) }); }
